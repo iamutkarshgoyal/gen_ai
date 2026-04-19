@@ -9,7 +9,6 @@ llm = ChatGoogleGenerativeAI(model="gemini-3-flash-preview")
 
 st.title("My Internet Mom!!")
 
-
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
