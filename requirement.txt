@@ -7,4 +7,6 @@ streamlit
 ollama 
 langchain-openai
 asyncio
-
+langchain-ollama
+pypdf
+langchain-text-splitters
