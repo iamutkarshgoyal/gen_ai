@@ -1,6 +1,7 @@
 import os
 from typing import Literal
 
+from dotenv import load_dotenv
 from langchain_ollama import ChatOllama
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, StateGraph
@@ -8,6 +9,7 @@ from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
+load_dotenv()
 
 Technical_database = [
     {
@@ -31,6 +33,7 @@ Technical_database = [
         "code_snippet": "this is a sample C++ code snippet for ProjectA."
     }
 ]
+
 
 class AgentState(BaseModel):
     """One schema for every field that can travel through the graph."""
@@ -70,8 +73,14 @@ class ApprovalDecision(BaseModel):
     approved: bool
     note: str | None = None
 
-
-LLM = ChatOllama(model="qwen3:4b", temperature=0)
+LLM = ChatOllama(
+    model="qwen3:4b",
+    temperature=0,
+    reasoning=False,
+    num_ctx=4096,
+    num_predict=256,
+    keep_alive="30m",
+)
 ROUTER = LLM.with_structured_output(RouteDecision)
 INVOICE_EXTRACTOR = LLM.with_structured_output(InvoiceRequest)
 TECHNICAL_EXTRACTOR = LLM.with_structured_output(TechnicalRequest)
@@ -120,7 +129,7 @@ def invoice_tool(state: AgentState) -> dict:
     _require(state.invoice_id, "invoice_id")
 
     update_values = {
-        "update_total_amount": ("amount", state.total_amount),
+        "update_total_amount": ("total_amount", state.total_amount),
         "update_due_date": ("due_date", state.due_date),
         "update_status": ("status", state.status),
     }
@@ -169,7 +178,7 @@ def invoice_tool(state: AgentState) -> dict:
         if state.intent == "get_invoice_details":
             row = conn.execute(
                 text(
-                    "SELECT invoice_id, invoice_date, due_date, amount, status "
+                    "SELECT invoice_id, invoice_date, due_date, total_amount, status "
                     "FROM invoices WHERE invoice_id = :id"
                 ),
                 {"id": state.invoice_id},
@@ -180,7 +189,7 @@ def invoice_tool(state: AgentState) -> dict:
                 "invoice_id": row["invoice_id"],
                 "invoice_date": str(row["invoice_date"]),
                 "due_date": str(row["due_date"]),
-                "total_amount": float(row["amount"]),
+                "total_amount": float(row["total_amount"]),
                 "status": row["status"],
                 "response": f"Invoice {state.invoice_id} loaded.",
             }
@@ -256,10 +265,6 @@ def technical_tool(state: AgentState) -> dict:
     return {"response": "Route this request to your technical knowledge/tool node."}
 
 
-def technical_tool(state: AgentState) -> dict:
-    return {"response": "Route this request to your technical knowledge/tool node."}
-
-
 def company_policies_tool(state: AgentState) -> dict:
     return {"response": "Route this request to your policy retrieval/RAG node."}
 
@@ -304,7 +309,7 @@ if __name__ == "__main__":
 
     first_result = app.invoke(
         {
-            "message": "Update ProjectX's language to JavaScript and review the following code snippet: function add(a, b) { return a + b; }",
+            "message": "Update Invoice INV-1002 total_amount to 1500.75 and due_date to 2024-07-15.",
             "response": None,
         },
         config=config,
