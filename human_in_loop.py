@@ -9,19 +9,43 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 
+Technical_database = [
+    {
+        "project": "ProjectX",
+        "language": "Python",
+        "code_snippet": "this is a sample Python code snippet for ProjectX."
+    },
+    {
+        "project": "ProjectY",
+        "language": "JavaScript",
+        "code_snippet": "this is a sample JavaScript code snippet for ProjectY."
+    },
+    {
+        "project": "ProjectZ",
+        "language": "Java",
+        "code_snippet": "this is a sample Java code snippet for ProjectZ."
+    },
+    {
+        "project": "ProjectA",
+        "language": "C++",
+        "code_snippet": "this is a sample C++ code snippet for ProjectA."
+    }
+]
+
 class AgentState(BaseModel):
     """One schema for every field that can travel through the graph."""
     message: str
     topic: Literal["Invoice", "Technical", "Company Policies", "Other"] | None = None
     response: str | None = None
-    intent: Literal["update_total_amount", "update_due_date", "update_status", "get_invoice_details", "get_invoice_pdf"] | None = None
+    intent: Literal["update_total_amount", "update_due_date", "update_status", "get_invoice_details", "get_invoice_pdf", "code_review", "bug_fix", "feature_request", "language_update"] | None = None
     invoice_id: str | None = None
     invoice_date: str | None = None
     due_date: str | None = None
     total_amount: float | None = None
     status: str | None = None
     pdf_path: str | None = None
-
+    project: str | None = None
+    language: Literal["Python", "JavaScript", "Java", "C++"] | None = None
 
 class RouteDecision(BaseModel):
     topic: Literal["Invoice", "Technical", "Company Policies", "Other"]
@@ -36,6 +60,12 @@ class InvoiceRequest(BaseModel):
     status: str | None = Field(default=None, description="Status explicitly present, otherwise null")
 
 
+class TechnicalRequest(BaseModel):
+    intent: Literal["code_review", "bug_fix", "feature_request", "language_update"]
+    project: str | None = Field(default=None, description="Project name explicitly present in the message")
+    language: Literal["Python", "JavaScript", "Java", "C++"] | None = Field(default=None, description="Programming language explicitly present in the message")
+
+
 class ApprovalDecision(BaseModel):
     approved: bool
     note: str | None = None
@@ -44,7 +74,7 @@ class ApprovalDecision(BaseModel):
 LLM = ChatOllama(model="qwen3:4b", temperature=0)
 ROUTER = LLM.with_structured_output(RouteDecision)
 INVOICE_EXTRACTOR = LLM.with_structured_output(InvoiceRequest)
-
+TECHNICAL_EXTRACTOR = LLM.with_structured_output(TechnicalRequest)
 
 def agent_node(state: AgentState) -> dict:
     route = ROUTER.invoke(
@@ -70,6 +100,13 @@ def agent_node(state: AgentState) -> dict:
                 total_amount=None,
                 status=None,
             )
+    elif route.topic == "Technical":
+        request = TECHNICAL_EXTRACTOR.invoke(
+            "Extract the technical request details and only values explicitly stated by the user. "
+            "Use null for every value that is not stated. "
+            f"Request: {state.message!r}"
+        )
+        update.update(request.model_dump())
     return update
 
 
@@ -118,7 +155,7 @@ def invoice_tool(state: AgentState) -> dict:
             column, new_value = update_values[state.intent]
             # The column comes only from the fixed mapping above. User values are bound.
             result = conn.execute(
-                text(f"UPDATE invoices SET {column} = :value WHERE invoice_id = :id"),
+                text(f"UPDATE public.invoices SET {column} = :value WHERE invoice_id = :id"),
                 {"value": new_value, "id": state.invoice_id},
             )
             if result.rowcount == 0:
@@ -161,6 +198,62 @@ def invoice_tool(state: AgentState) -> dict:
             }
 
     raise ValueError(f"Unsupported invoice intent: {state.intent}")
+
+
+def technical_tool(state: AgentState) -> dict:
+    _require(state.project, "project")
+    _require(state.language, "language")
+
+    if state.intent == "language_update":
+        for entry in Technical_database:
+            if entry["project"] == state.project:
+                if entry["language"] != state.language:
+                    decision = interrupt(
+                        {
+                            "question": (
+                                f"Update language for project {state.project} "
+                                f"from {entry['language']} to {state.language}?"
+                            ),
+                            "type": "approval",
+                            "allowed_responses": ["yes", "no"],
+                        },
+                    )
+                    if not decision.get("approved", False):
+                        return {
+                            "response": f"Language update for project {state.project} cancelled."
+                        }
+                    entry["language"] = state.language
+                    return {
+                        "response": f"Language for project {state.project} updated to {state.language}."
+                    }
+                else:
+                    return {
+                        "response": f"Project {state.project} already has language {state.language}."
+                    }   
+
+    elif state.intent in {"code_review", "bug_fix", "feature_request"}:
+        for entry in Technical_database:
+            if entry["project"] == state.project and entry["language"] == state.language:
+                if state.code_snippet:
+                    decision = interrupt(
+                        {
+                            "question": (f"Process {state.intent} for project {state.project} with the provided code snippet?"),
+                            "type": "approval",
+                            "allowed_responses": ["yes", "no"],
+                        }
+                    )
+                    if not decision.get("approved", False):
+                        return {
+                            "response": f"{state.intent} for project {state.project} cancelled."
+                        }
+                    return {
+                        "response": f"Processed {state.intent} for project {state.project} with provided code snippet."
+                    }
+                else:
+                    return {
+                        "response": f"No code snippet provided for {state.intent} in project {state.project}."
+                    }
+    return {"response": "Route this request to your technical knowledge/tool node."}
 
 
 def technical_tool(state: AgentState) -> dict:
@@ -211,7 +304,7 @@ if __name__ == "__main__":
 
     first_result = app.invoke(
         {
-            "message": "Update invoice INV-1002 status to paid",
+            "message": "Update ProjectX's language to JavaScript and review the following code snippet: function add(a, b) { return a + b; }",
             "response": None,
         },
         config=config,
